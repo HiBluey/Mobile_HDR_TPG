@@ -104,47 +104,109 @@ class MainActivity : AppCompatActivity() {
         try {
             val factory = DocumentBuilderFactory.newInstance()
             val builder = factory.newDocumentBuilder()
+            // 解析 XML 字符串
             val doc = builder.parse(InputSource(StringReader(xml)))
+
+            // ==========================================
+            // 核心修复：通用的智能颜色提取器
+            // 解决 Calman / ColourSpace 位深标记混乱与溢出变黑问题
+            // ==========================================
+            fun extractColor(element: Element): FloatArray {
+                val r = element.getAttribute("red").toFloatOrNull() ?: 0f
+                val g = element.getAttribute("green").toFloatOrNull() ?: 0f
+                val b = element.getAttribute("blue").toFloatOrNull() ?: 0f
+
+                var bits = 8
+                if (element.hasAttribute("bits")) {
+                    bits = element.getAttribute("bits").toIntOrNull() ?: 8
+                } else {
+                    // 智能推断：如果软件没发 bits，但数值超过了 255，自动升级位深
+                    if (r > 255f || g > 255f || b > 255f) {
+                        bits = if (r > 1023f || g > 1023f || b > 1023f) 16 else 10
+                    }
+                }
+
+                val maxValue = ((1 shl bits) - 1).toFloat()
+
+                // coerceIn 极其重要：强制将结果卡在 0.0f - 1.0f 之间，彻底杜绝底层溢出变黑
+                return floatArrayOf(
+                    (r / maxValue).coerceIn(0f, 1f),
+                    (g / maxValue).coerceIn(0f, 1f),
+                    (b / maxValue).coerceIn(0f, 1f)
+                )
+            }
+
             val rectNodes = doc.getElementsByTagName("rectangle")
 
-            for (i in 0 until rectNodes.length) {
-                val node = rectNodes.item(i) as Element
-                var rFloat = 0f; var gFloat = 0f; var bFloat = 0f
+            if (rectNodes.length > 0) {
+                // ----------------------------------------
+                // 模式 A：ColourSpace 协议
+                // ----------------------------------------
+                for (i in 0 until rectNodes.length) {
+                    val node = rectNodes.item(i) as Element
+                    var rgb = floatArrayOf(0f, 0f, 0f)
 
-                val colexList = node.getElementsByTagName("colex")
+                    val colexList = node.getElementsByTagName("colex")
+                    if (colexList.length > 0) {
+                        rgb = extractColor(colexList.item(0) as Element)
+                    } else {
+                        val colorList = node.getElementsByTagName("color")
+                        if (colorList.length > 0) {
+                            rgb = extractColor(colorList.item(0) as Element)
+                        }
+                    }
+
+                    var x = 0f; var y = 0f; var cx = 1f; var cy = 1f
+                    val geomList = node.getElementsByTagName("geometry")
+                    if (geomList.length > 0) {
+                        val geom = geomList.item(0) as Element
+                        x = geom.getAttribute("x").toFloatOrNull() ?: 0f
+                        y = geom.getAttribute("y").toFloatOrNull() ?: 0f
+                        cx = geom.getAttribute("cx").toFloatOrNull() ?: 1f
+                        cy = geom.getAttribute("cy").toFloatOrNull() ?: 1f
+                    }
+
+                    val colorLong = Color.pack(rgb[0], rgb[1], rgb[2], 1f, ColorSpace.get(ColorSpace.Named.BT2020_PQ))
+                    parsedRects.add(PatchRect(colorLong, x, y, cx, cy))
+                }
+            } else {
+                // ----------------------------------------
+                // 模式 B：Calman (DaVinci Resolve) 协议
+                // ----------------------------------------
+
+                // 先画背景 <background>
+                val bgNodes = doc.getElementsByTagName("background")
+                if (bgNodes.length > 0) {
+                    val bg = bgNodes.item(0) as Element
+                    val bgRgb = extractColor(bg)
+                    val bgColorLong = Color.pack(bgRgb[0], bgRgb[1], bgRgb[2], 1f, ColorSpace.get(ColorSpace.Named.BT2020_PQ))
+                    parsedRects.add(PatchRect(bgColorLong, 0f, 0f, 1f, 1f))
+                }
+
+                // 再画前景测量色块 <color> 或 <colex>
+                var fgRgb = floatArrayOf(0f, 0f, 0f)
+                val colexList = doc.getElementsByTagName("colex")
                 if (colexList.length > 0) {
-                    val colex = colexList.item(0) as Element
-                    val bits = colex.getAttribute("bits").toInt()
-                    val maxValue = ((1 shl bits) - 1).toFloat()
-                    rFloat = colex.getAttribute("red").toFloat() / maxValue
-                    gFloat = colex.getAttribute("green").toFloat() / maxValue
-                    bFloat = colex.getAttribute("blue").toFloat() / maxValue
+                    fgRgb = extractColor(colexList.item(0) as Element)
                 } else {
-                    val colorList = node.getElementsByTagName("color")
+                    val colorList = doc.getElementsByTagName("color")
                     if (colorList.length > 0) {
-                        val color = colorList.item(0) as Element
-                        rFloat = color.getAttribute("red").toFloat() / 255f
-                        gFloat = color.getAttribute("green").toFloat() / 255f
-                        bFloat = color.getAttribute("blue").toFloat() / 255f
+                        fgRgb = extractColor(colorList.item(0) as Element)
                     }
                 }
 
                 var x = 0f; var y = 0f; var cx = 1f; var cy = 1f
-                val geomList = node.getElementsByTagName("geometry")
+                val geomList = doc.getElementsByTagName("geometry")
                 if (geomList.length > 0) {
                     val geom = geomList.item(0) as Element
-                    x = geom.getAttribute("x").toFloat()
-                    y = geom.getAttribute("y").toFloat()
-                    cx = geom.getAttribute("cx").toFloat()
-                    cy = geom.getAttribute("cy").toFloat()
+                    x = geom.getAttribute("x").toFloatOrNull() ?: 0f
+                    y = geom.getAttribute("y").toFloatOrNull() ?: 0f
+                    cx = geom.getAttribute("cx").toFloatOrNull() ?: 1f
+                    cy = geom.getAttribute("cy").toFloatOrNull() ?: 1f
                 }
 
-                val colorLong = Color.pack(
-                    rFloat, gFloat, bFloat, 1f,
-                    ColorSpace.get(ColorSpace.Named.BT2020_PQ)
-                )
-
-                parsedRects.add(PatchRect(colorLong, x, y, cx, cy))
+                val fgColorLong = Color.pack(fgRgb[0], fgRgb[1], fgRgb[2], 1f, ColorSpace.get(ColorSpace.Named.BT2020_PQ))
+                parsedRects.add(PatchRect(fgColorLong, x, y, cx, cy))
             }
         } catch (e: Exception) {
             e.printStackTrace()
