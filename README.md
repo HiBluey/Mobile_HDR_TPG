@@ -1,4 +1,4 @@
-# Mobile HDR TPG (ColourSpace Client)
+# Mobile HDR TPG (ColourSpace Network Client)
 
 An Android-based 10-bit HDR (BT.2020 PQ) Test Patch Generator (TPG). This project implements the communications protocol for the ColourSpace Calibration Client operatio. It enables the definition of patch size, shape, position, and more for external patch generators, acting as a seamless hardware client for ColourSpace.
 
